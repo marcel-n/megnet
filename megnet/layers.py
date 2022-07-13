@@ -1,6 +1,3 @@
-from functools import partial
-from turtle import forward
-
 import torch
 import dgl
 from torch.nn import Module, Softplus, Dropout, ModuleList, Identity
@@ -14,22 +11,22 @@ class MegNetGraphConv(Module):
 
     def __init__(
         self,
-        edge_update: Module,
-        node_update: Module,
-        attr_update: Module,
-        ) -> None:
+        edge_func: Module,
+        node_func: Module,
+        attr_func: Module,
+    ) -> None:
 
         super().__init__()
-        self.edge_update = edge_update
-        self.node_update = node_update
-        self.attr_update = attr_update
+        self.edge_func = edge_func
+        self.node_func = node_func
+        self.attr_func = attr_func
 
     @staticmethod
     def from_dims(
-        edge_dims: List[int], 
-        node_dims: List[int], 
+        edge_dims: List[int],
+        node_dims: List[int],
         attr_dims: List[int]
-        ) -> "MegNetGraphConv":
+    ) -> "MegNetGraphConv":
         # TODO(marcel): Softplus doesnt exactly match paper's SoftPlus2
         # TODO(marcel): Should we activate last?
         edge_update = MLP(edge_dims, Softplus(), activate_last=True)
@@ -43,13 +40,13 @@ class MegNetGraphConv(Module):
         u = edges.src['u']
         eij = edges.data.pop('e')
         inputs = torch.hstack([vi, vj, eij, u])
-        mij = {'mij': self.edge_update(inputs)}
+        mij = {'mij': self.edge_func(inputs)}
         return mij
 
     def edge_update_(self, graph: DGLGraph) -> Tensor:
         graph.apply_edges(self._edge_udf)
         graph.edata['e'] = graph.edata.pop('mij')
-        return graph.edata['e'] 
+        return graph.edata['e']
 
     def node_update_(self, graph: DGLGraph) -> Tensor:
         graph.update_all(fn.copy_e('e', 'e'), fn.mean('e', 've'))
@@ -57,28 +54,28 @@ class MegNetGraphConv(Module):
         v = graph.ndata.pop('v')
         u = graph.ndata.pop('u')
         inputs = torch.hstack([v, ve, u])
-        graph.ndata['v'] = self.node_update(inputs)
-        return graph.ndata['v'] 
+        graph.ndata['v'] = self.node_func(inputs)
+        return graph.ndata['v']
 
     def attr_update_(self, graph: DGLGraph, attrs: Tensor) -> Tensor:
         u = attrs
         ue = dgl.readout_edges(graph, feat='e', op='mean')
         uv = dgl.readout_nodes(graph, feat='v', op='mean')
         inputs = torch.hstack([u, ue, uv])
-        graph_attr = self.attr_update(inputs)
+        graph_attr = self.attr_func(inputs)
         return graph_attr
 
     def forward(
-        self, 
-        graph: DGLGraph, 
-        edge_feat: Tensor, 
-        node_feat: Tensor, 
+        self,
+        graph: DGLGraph,
+        edge_feat: Tensor,
+        node_feat: Tensor,
         graph_attr: Tensor,
-        ) -> List[Tensor]:
+    ) -> List[Tensor]:
         with graph.local_scope():
             graph.edata['e'] = edge_feat
             graph.ndata['v'] = node_feat
-            nodes_per_example = graph.batch_num_nodes() 
+            nodes_per_example = graph.batch_num_nodes()
             graph.ndata['u'] = graph_attr.repeat_interleave(
                 nodes_per_example, dim=0
             )
@@ -98,7 +95,7 @@ class MegNetBlock(Module):
         conv_hiddens: List[int],
         dropout: Optional[float] = None,
         skip: bool = True,
-        ) -> None:
+    ) -> None:
         super().__init__()
 
         self.has_dense = len(dims) > 1
@@ -116,26 +113,26 @@ class MegNetBlock(Module):
         self.attr_func = MLP(**mlp_kwargs) if self.has_dense else Identity()
 
         # compute input sizes
-        edge_in = 2*conv_dim + conv_dim + conv_dim # 2*NDIM+EDIM+GDIM 
-        node_in = out_dim + conv_dim + conv_dim  # EDIM+NDIM+GDIM 
+        edge_in = 2*conv_dim + conv_dim + conv_dim  # 2*NDIM+EDIM+GDIM
+        node_in = out_dim + conv_dim + conv_dim  # EDIM+NDIM+GDIM
         attr_in = out_dim + out_dim + conv_dim  # EDIM+NDIM+GDIM
         self.conv = MegNetGraphConv.from_dims(
             edge_dims=[edge_in]+conv_hiddens,
             node_dims=[node_in]+conv_hiddens,
             attr_dims=[attr_in]+conv_hiddens,
-        ) 
+        )
 
         self.dropout = Dropout(dropout) if dropout else None
-        #TODO(marcel): should this be an 1D dropout
+        # TODO(marcel): should this be an 1D dropout
         self.skip = skip
 
     def forward(
-        self, 
-        graph: DGLGraph, 
-        edge_feat: Tensor, 
-        node_feat: Tensor, 
+        self,
+        graph: DGLGraph,
+        edge_feat: Tensor,
+        node_feat: Tensor,
         graph_attr: Tensor,
-        ) -> List[Tensor]:
+    ) -> List[Tensor]:
 
         inputs = (edge_feat, node_feat, graph_attr)
         edge_feat = self.edge_func(edge_feat)
