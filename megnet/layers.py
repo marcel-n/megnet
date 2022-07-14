@@ -75,10 +75,7 @@ class MegNetGraphConv(Module):
         with graph.local_scope():
             graph.edata['e'] = edge_feat
             graph.ndata['v'] = node_feat
-            nodes_per_example = graph.batch_num_nodes()
-            graph.ndata['u'] = graph_attr.repeat_interleave(
-                nodes_per_example, dim=0
-            )
+            graph.ndata['u'] = dgl.broadcast_nodes(graph, graph_attr)
 
             edge_feat = self.edge_update_(graph)
             node_feat = self.node_update_(graph)
